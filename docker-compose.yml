@@ -1,18 +1,18 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16
     container_name: flashsale-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: flashsale
-      POSTGRES_PASSWORD: flashsale
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: flashsale
     ports:
-      - "5432:5432"
+      - "5446:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flashsale -d flashsale"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 2s
       timeout: 3s
       retries: 20

@@ -10,34 +10,34 @@ async function main() {
       id: 'seed-product',
       name: 'Limited Edition Sneaker',
       description: 'A test product for the flash sale.',
-      imageUrl: null,
+      image_url: null,
     },
   });
 
-  const startsAt = new Date(Date.now() - 60_000);
-  const endsAt = new Date(Date.now() + 60 * 60_000);
-  const totalStock = 10;
+  const starts_at = new Date(Date.now() - 60_000);
+  const ends_at = new Date(Date.now() + 60 * 60_000);
+  const total_stock = 50;
 
   await prisma.sale.upsert({
     where: { id: 'seed-sale' },
     update: {
-      startsAt,
-      endsAt,
-      totalStock,
-      remainingStock: totalStock,
+      starts_at,
+      ends_at,
+      total_stock,
+      remaining_stock: total_stock,
     },
     create: {
       id: 'seed-sale',
-      productId: product.id,
-      startsAt,
-      endsAt,
-      totalStock,
-      remainingStock: totalStock,
+      product_id: product.id,
+      starts_at,
+      ends_at,
+      total_stock,
+      remaining_stock: total_stock,
     },
   });
 
   // eslint-disable-next-line no-console
-  console.log(`Seeded sale 'seed-sale' with stock=${totalStock}, window now → +60min`);
+  console.log(`Seeded sale 'seed-sale' with stock=${total_stock}, window now → +60min`);
 }
 
 main()

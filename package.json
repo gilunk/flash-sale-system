@@ -7,6 +7,8 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "lint": "turbo run lint",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
     "test": "turbo run test"
   },
   "keywords": [],
