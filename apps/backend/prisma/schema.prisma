@@ -1,0 +1,72 @@
+// Flash sale schema. Concurrency correctness lives here:
+//   - sales.remainingStock is decremented atomically via UPDATE ... WHERE remaining_stock > 0
+//   - orders has UNIQUE(userId, saleId) so a single user cannot purchase twice, even on race
+//   - orders.idempotencyKey is partial-unique so client retries collapse to one row
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  imageUrl    String?  @map("image_url")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  sales Sale[]
+
+  @@map("products")
+}
+
+model Sale {
+  id             String   @id @default(cuid())
+  productId      String   @map("product_id")
+  startsAt       DateTime @map("starts_at")
+  endsAt         DateTime @map("ends_at")
+  totalStock     Int      @map("total_stock")
+  remainingStock Int      @map("remaining_stock")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  product Product @relation(fields: [productId], references: [id])
+  orders  Order[]
+
+  @@map("sales")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String?  @unique
+  username  String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+
+  orders Order[]
+
+  @@map("users")
+}
+
+enum OrderStatus {
+  CONFIRMED
+}
+
+model Order {
+  id             String      @id @default(cuid())
+  userId         String      @map("user_id")
+  saleId         String      @map("sale_id")
+  idempotencyKey String?     @map("idempotency_key")
+  status         OrderStatus @default(CONFIRMED)
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+  sale Sale @relation(fields: [saleId], references: [id])
+
+  @@unique([userId, saleId], map: "uq_orders_user_sale")
+  @@unique([idempotencyKey], map: "uq_orders_idem")
+  @@map("orders")
+}

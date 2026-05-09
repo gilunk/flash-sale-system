@@ -1,0 +1,22 @@
+{
+  "name": "flash-sale-system",
+  "private": true,
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "test": "turbo run test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.23.0",
+  "devDependencies": {
+    "turbo": "^2.9.12"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

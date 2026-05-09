@@ -1,0 +1,11 @@
+# Turbo
+.turbo
+
+# Dependencies
+node_modules
+
+# Local env files
+.env
+
+# Testing
+coverage
