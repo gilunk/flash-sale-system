@@ -14,8 +14,8 @@ async function main() {
     (await prisma.product.create({
       data: {
         name: PRODUCT_NAME,
-        description: 'A test product for the flash sale.',
-        image_url: null,
+        description: 'Premium Sneakers made from Japan',
+        image_url: 'https://picsum.photos/seed/sneaker/800/600',
       },
     }));
 

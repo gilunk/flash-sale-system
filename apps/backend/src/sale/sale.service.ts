@@ -45,6 +45,7 @@ export class SaleService {
       saleId: sale.id,
       productId: sale.product.id,
       productName: sale.product.name,
+      productImageUrl: sale.product.image_url ?? null,
       startsAt: sale.starts_at.toISOString(),
       endsAt: sale.ends_at.toISOString(),
       totalStock: sale.total_stock,
