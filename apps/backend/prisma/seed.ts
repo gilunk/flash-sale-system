@@ -2,42 +2,54 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+const PRODUCT_NAME = 'Limited Edition Sneaker';
+
 async function main() {
-  const product = await prisma.product.upsert({
-    where: { id: 'seed-product' },
-    update: {},
-    create: {
-      id: 'seed-product',
-      name: 'Limited Edition Sneaker',
-      description: 'A test product for the flash sale.',
-      image_url: null,
-    },
+  const existingProduct = await prisma.product.findFirst({
+    where: { name: PRODUCT_NAME },
   });
+
+  const product =
+    existingProduct ??
+    (await prisma.product.create({
+      data: {
+        name: PRODUCT_NAME,
+        description: 'A test product for the flash sale.',
+        image_url: null,
+      },
+    }));
 
   const starts_at = new Date(Date.now() - 60_000);
   const ends_at = new Date(Date.now() + 60 * 60_000);
   const total_stock = 50;
 
-  await prisma.sale.upsert({
-    where: { id: 'seed-sale' },
-    update: {
-      starts_at,
-      ends_at,
-      total_stock,
-      remaining_stock: total_stock,
-    },
-    create: {
-      id: 'seed-sale',
-      product_id: product.id,
-      starts_at,
-      ends_at,
-      total_stock,
-      remaining_stock: total_stock,
-    },
+  const existingSale = await prisma.sale.findFirst({
+    where: { product_id: product.id },
+    orderBy: { created_at: 'desc' },
   });
 
+  const isExpired = existingSale ? existingSale.ends_at.getTime() < Date.now() : false;
+
+  const sale =
+    existingSale && !isExpired
+      ? await prisma.sale.update({
+          where: { id: existingSale.id },
+          data: { starts_at, ends_at, total_stock, remaining_stock: total_stock },
+        })
+      : await prisma.sale.create({
+          data: {
+            product_id: product.id,
+            starts_at,
+            ends_at,
+            total_stock,
+            remaining_stock: total_stock,
+          },
+        });
+
   // eslint-disable-next-line no-console
-  console.log(`Seeded sale 'seed-sale' with stock=${total_stock}, window now → +60min`);
+  console.log(
+    `Seeded product=${product.id} sale=${sale.id} stock=${total_stock}, window now → +60min`,
+  );
 }
 
 main()

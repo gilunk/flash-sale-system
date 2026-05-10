@@ -54,7 +54,7 @@ model Order {
   id              String      @id @default(cuid())
   user_id         String      
   sale_id         String      
-  idempotency_key Int         @unique // Unix timestamp      
+  idempotency_key String      @unique 
   status          OrderStatus @default(CONFIRMED)
   created_at      DateTime    @default(now()) 
   updated_at      DateTime    @updatedAt
@@ -62,6 +62,6 @@ model Order {
   user User @relation(fields: [user_id], references: [id])
   sale Sale @relation(fields: [sale_id], references: [id])
 
-  @@unique([user_id, sale_id], map: "uq_orders_user_sale")
+  @@unique([user_id, sale_id], map: "uq_orders_user_sale") // 1 user can only buy 1 product on each sale
   @@map("orders")
 }
