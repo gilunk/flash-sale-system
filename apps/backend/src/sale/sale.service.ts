@@ -10,6 +10,7 @@ import { Prisma } from "@prisma/client";
 import { SaleStatusDto } from "./dto/sale-status.dto";
 import { PurchaseRequestDto, PurchaseResponseDto } from "./dto/purchase.dto";
 import { BusinessError } from "./errors/error";
+import { SaleGateway } from "./sale.gateway";
 import { PrismaService } from "src/db/prisma.service";
 import { RedisService } from "src/cache/redis.service";
 
@@ -24,6 +25,7 @@ export class SaleService {
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly gateway: SaleGateway,
   ) {
     this.cacheTtlMs = Number(this.config.get<string>('SALE_CACHE_TTL_MS') ?? 1000);
   }
@@ -130,15 +132,20 @@ export class SaleService {
       }
     });
 
-    // Invalidate sale cache after ordering
-    this.redis
-      .getClient()
-      .del(SALE_STATUS_CACHE_KEY)
-      .catch((err) =>
-        this.logger.warn(`Failed to invalidate sale status cache: ${err}`),
-      );
+    // Stock changed → invalidate cache, recompute fresh status, broadcast to
+    // every connected client. Best-effort: failure here doesn't fail the
+    // purchase (the next HTTP poll or next purchase will reconcile state).
+    this.broadcastFreshStatus().catch((err) =>
+      this.logger.warn(`Failed to broadcast sale status: ${err}`),
+    );
 
     return { orderId, status: 'CONFIRMED' };
+  }
+
+  private async broadcastFreshStatus(): Promise<void> {
+    await this.redis.getClient().del(SALE_STATUS_CACHE_KEY);
+    const fresh = await this.getStatus();
+    this.gateway.emitStatus(fresh);
   }
 
   private deriveState(

@@ -32,6 +32,27 @@ services:
       timeout: 3s
       retries: 20
 
+  # Ephemeral DB used by integration tests. tmpfs so each `docker compose up`
+  # gives you a clean DB without volume cleanup. Started on demand via
+  # `docker compose up -d postgres-test`.
+  postgres-test:
+    image: postgres:16
+    container_name: flashsale-postgres-test
+    profiles: ["test"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flashsale_test
+    ports:
+      - "5447:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
 volumes:
   postgres_data:
   redis_data:
