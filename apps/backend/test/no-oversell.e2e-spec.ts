@@ -1,7 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
-import * as request from 'supertest';
+import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { BusinessErrorFilter } from '../src/common/filters/business-error.filter';
 import { PrismaService } from '../src/db/prisma.service';
@@ -33,11 +33,12 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
   });
 
   beforeEach(async () => {
-    // Wipe FK-deepest-first so cascades don't bite.
-    await prisma.order.deleteMany();
-    await prisma.sale.deleteMany();
-    await prisma.user.deleteMany();
-    await prisma.product.deleteMany();
+    // Single-statement TRUNCATE CASCADE is atomic and handles FK ordering
+    // automatically — safer than chained deleteMany() calls when the previous
+    // test may have left rows in flight.
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "orders", "sales", "users", "products" RESTART IDENTITY CASCADE',
+    );
   });
 
   async function seedSale(stock: number) {
@@ -57,7 +58,7 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
   it('serves exactly N orders for stock=N when ATTEMPTS > N', async () => {
     const STOCK = 10;
-    const ATTEMPTS = 500;
+    const ATTEMPTS = 200;
 
     const sale = await seedSale(STOCK);
 

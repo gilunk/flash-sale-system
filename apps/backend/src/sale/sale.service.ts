@@ -6,7 +6,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { Prisma } from "@prisma/client";
+import { Prisma, User } from "@prisma/client";
 import { SaleStatusDto } from "./dto/sale-status.dto";
 import { PurchaseRequestDto, PurchaseResponseDto } from "./dto/purchase.dto";
 import { BusinessError } from "./errors/error";
@@ -85,13 +85,16 @@ export class SaleService {
       throw new ServiceUnavailableException('No flash sale at the moment.');
     }
 
-    const orderId = await this.prisma.$transaction(async (tx) => {
-      const user = await tx.user.upsert({
-        where: { email },
-        create: { email },
-        update: {},
-      });
+    // Resolve the user OUTSIDE the transaction. Doing this inside $transaction
+    // is dangerous: if two parallel callers both miss the SELECT and try to
+    // INSERT, the loser's P2002 *poisons the transaction* — Postgres marks it
+    // aborted (25P02) and any subsequent statement fails. By resolving the
+    // user first, the purchase transaction starts with a known user.id and
+    // can never hit that pathology. Orphan users (created but never purchased)
+    // are harmless — the identity is just a buyer label.
+    const user = await this.ensureUser(email);
 
+    const orderId = await this.prisma.$transaction(async (tx) => {
       // To handle overselling
       const decrementedStock = await tx.$queryRaw<Array<{ remaining_stock: number }>>`
         UPDATE sales
@@ -132,9 +135,7 @@ export class SaleService {
       }
     });
 
-    // Stock changed → invalidate cache, recompute fresh status, broadcast to
-    // every connected client. Best-effort: failure here doesn't fail the
-    // purchase (the next HTTP poll or next purchase will reconcile state).
+    // Stock changed → invalidate cache, recompute fresh status, broadcast to client
     this.broadcastFreshStatus().catch((err) =>
       this.logger.warn(`Failed to broadcast sale status: ${err}`),
     );
@@ -142,7 +143,28 @@ export class SaleService {
     return { orderId, status: 'CONFIRMED' };
   }
 
-  private async broadcastFreshStatus(): Promise<void> {
+  // Find the user by email; create one if they don't exist yet. Lives OUTSIDE
+  // the purchase transaction so the race-induced P2002 can't poison it.
+  private async ensureUser(email: string): Promise<User> {
+    const existing = await this.prisma.user.findFirst({ where: { email } });
+    if (existing) return existing;
+
+    try {
+      return await this.prisma.user.create({ data: { email } });
+    } catch (err) {
+      // Race window: another concurrent caller created the same email between
+      // our findFirst and create. Re-fetch the winner's row.
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError &&
+        err.code === 'P2002'
+      ) {
+        return this.prisma.user.findUniqueOrThrow({ where: { email } });
+      }
+      throw err;
+    }
+  }
+
+  async broadcastFreshStatus(): Promise<void> {
     await this.redis.getClient().del(SALE_STATUS_CACHE_KEY);
     const fresh = await this.getStatus();
     this.gateway.emitStatus(fresh);

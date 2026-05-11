@@ -28,6 +28,7 @@ export function useSaleStatus() {
     // Push directly into React Query's cache — components re-render with no
     // extra HTTP round-trip.
     socket.on('sale:status', (next: SaleStatus) => {
+      console.log('next', next);
       queryClient.setQueryData(SALE_STATUS_KEY, next);
     });
 

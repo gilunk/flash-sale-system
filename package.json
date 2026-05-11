@@ -9,7 +9,8 @@
     "lint": "turbo run lint",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
-    "test": "turbo run test"
+    "test": "turbo run test",
+    "command": "node --env-file=apps/backend/.env ./apps/backend/src/common/scripts/command.js"
   },
   "keywords": [],
   "author": "",

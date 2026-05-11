@@ -1,30 +1,28 @@
 # Flash Sale System
 
-A high-throughput, single-product flash sale built with **NestJS + Postgres + Redis + Socket.IO** on the backend and **Next.js + React Query** on the frontend. Designed around three goals from the spec: **correctness under concurrency**, **demonstrability via stress tests**, and **clear articulation of trade-offs**.
+A single-product flash sale system built with **NestJS + Postgres + Redis + Socket.IO** on the backend and **Next.js + React Query** on the frontend. Designed around three goals from the spec: **correctness under concurrency**, **demonstrability via stress tests**, and **clear articulation of trade-offs**.
 
 > **Headline correctness result** — from `pnpm --filter backend test:concurrency`:
 >
 > ```
-> ✓ serves exactly N orders for stock=N when ATTEMPTS > N  (10 succeeded, 490 rejected with SOLD_OUT, 0 errors)
+> ✓ serves exactly N orders for stock=N when ATTEMPTS > N  (e.g. 10 succeeded, 490 rejected with SOLD_OUT, 0 errors)
 > ✓ one user firing 100 concurrent purchases gets exactly 1 order
 > ✓ 100 concurrent calls with SAME idempotency key produce 1 order, all referencing the same orderId
 > ```
 >
-> The system cannot oversell under load — this is enforced by a single SQL statement, not by application-layer locking.
+> The system cannot oversell under load — this is enforced by a single SQL statement.
 
 ---
 
 ## Table of contents
 
 1. [Architecture](#architecture)
-2. [Design decisions](#design-decisions-and-trade-offs)
-3. [Tech stack](#tech-stack)
-4. [Quick start](#quick-start)
-5. [API](#api)
-6. [Testing](#testing)
-7. [Stress testing](#stress-testing)
-8. [At higher scale: what I'd add](#at-higher-scale-what-id-add)
-9. [Project structure](#project-structure)
+2. [Tech stack](#tech-stack)
+3. [Quick start](#quick-start)
+4. [API](#api)
+5. [Testing](#testing)
+6. [Stress testing](#stress-testing)
+7. [Project structure](#project-structure)
 
 ---
 
@@ -59,94 +57,6 @@ flowchart LR
     svc -->|"emit on stock change"| gw
 ```
 
-### Request flow at a glance
-
-| Action | Path | Backed by |
-| --- | --- | --- |
-| First page load | `GET /api/sale/status` | Postgres read, cached in Redis (1s TTL) |
-| Live updates | WebSocket `/sale-stream` event `sale:status` | Pushed by `SaleService` on every successful purchase |
-| Buy attempt | `POST /api/sale/purchase` | Atomic Postgres transaction (decrement + insert), idempotency-key dedup |
-
----
-
-## Design decisions and trade-offs
-
-The spec explicitly evaluates trade-off judgment, so this section is where most of the thinking lives.
-
-### Concurrency control: Postgres-only, not Redis Lua
-
-**The entire correctness story is two SQL primitives:**
-
-```sql
--- 1. Atomic conditional decrement with row lock + DB-side time check
-UPDATE sales
-   SET remaining_stock = remaining_stock - 1, updated_at = NOW()
- WHERE id = $1
-   AND remaining_stock > 0
-   AND NOW() BETWEEN starts_at AND ends_at
-RETURNING remaining_stock;
-
--- 2. Per-user UNIQUE constraint enforces one item per user
-CREATE UNIQUE INDEX uq_orders_user_sale ON orders(user_id, sale_id);
-```
-
-Postgres serializes writers on the contended row; `WHERE remaining_stock > 0` is the gate. If 1000 requests race for stock=10, exactly 10 see a non-empty `RETURNING`. The unique constraint catches the case where one user fires multiple concurrent buys — both win the stock decrement but only one INSERT survives, and throwing inside the transaction rolls back the decrement for the loser.
-
-**Why not Redis Lua + reconciler (the "canonical flash sale" pattern)?**
-At thousands of concurrent attempts on a laptop, Postgres' row lock is not the bottleneck — Node's event loop and HTTP overhead are. Redis Lua adds a second source of truth, compensation logic, and a reconciler worker for the Redis-OK / DB-fail window. Provably correct by construction (one SQL statement) beats "fast but needs eventual reconciliation" for a take-home. The inflection point is roughly >5k sustained RPS for one item — well outside this brief.
-
-### Idempotency: client-generated UUID per click
-
-Every `POST /sale/purchase` carries an `Idempotency-Key: <uuid>` header generated client-side via `crypto.randomUUID()` per Buy-Now click. The server stores it on the order row (`@unique`). A replay returns the original order without re-running the transaction. This is the Stripe pattern, and it neutralizes the entire class of "network blip causes a double charge" bugs without server-side session state.
-
-### Cache layer: Redis as read-through, NOT as the concurrency gate
-
-`GET /sale/status` is wrapped in a 1-second read-through cache:
-
-- Cache hit → return.
-- Cache miss → DB query → populate cache → return.
-- After every successful purchase, the service invalidates the cache, recomputes fresh status, and emits it over WebSocket.
-
-This makes Redis a **performance enhancer**, not a **correctness mechanism**. If Redis goes down, the system slows but stays correct.
-
-**Why keep Redis once WebSocket arrived?** Once live updates moved to WebSocket, polling traffic disappeared and Redis stopped being load-bearing for the steady-state case. It still earns its keep for the **thundering-herd scenario** at sale start — when N viewers refresh simultaneously the moment the sale opens, the cache coalesces them into one DB query per second. At single-pod scale this could be done with an in-process `Map`; Redis is retained because the architecture already separates "shared state" (cache + DB) from "process-local state" (the Nest app), and that separation is what lets the system scale to multiple backend pods later without rewriting `SaleService`.
-
-### Live updates: WebSocket (socket.io), not polling
-
-The initial spec analysis preferred polling (simpler, stateless), but WebSocket was chosen here to give users sub-second feedback on stock changes when other buyers succeed. Trade-offs:
-
-| | WebSocket (chosen) | Polling |
-| --- | --- | --- |
-| Latency on stock change | ~50ms | Up to 1s |
-| Server statefulness | Stateful (sticky session if scaled) | Stateless |
-| Bandwidth at idle | ~0 | N × 1 req/sec |
-| Reconnection complexity | Heartbeat + safety refetch | "Next request works" |
-
-I kept the HTTP `/sale/status` endpoint for initial load + a 30-second safety refetch — if the socket drops silently, the UI reconciles within 30s instead of hanging forever. This hybrid (HTTP initial + WS deltas) is the same pattern Stripe Dashboard, Linear, and Discord use.
-
-### No authentication
-
-The spec asks for "a user identifier (e.g., username or email)" — not real auth. The buyer's email is sent as a plain field on `POST /sale/purchase`. Identity is enforced by the unique `email` column + the `(user_id, sale_id)` unique index. This is the spec's literal ask; adding JWT/sessions for a one-week take-home would be over-scoping.
-
-### Single-product, single-sale: zero `saleId` in the URL
-
-The spec is explicit: one product, one sale. So:
-
-- `GET /sale/status` (no path param) returns "the current sale" — the most recent row in `sales`, picked by `ORDER BY starts_at DESC, created_at DESC`.
-- `POST /sale/purchase` body includes `sale_id` for safety, but the frontend reads it from the same status response.
-- No "list active sales" endpoint, no discovery dance. If the spec ever needs multi-sale, the migration is local: parameterize the endpoints, keep the rest.
-
-### Deliberately omitted
-
-| Not built | Reason |
-| --- | --- |
-| **BullMQ queue** | No async work on the critical path — a flash sale needs a synchronous "confirmed/sold out" response, not a "queued" response. |
-| **Authentication** | Spec asks for an identifier, not auth. Adding JWT would be padding. |
-| **Cloud deploy** | Spec explicitly says local Docker is fine; the architecture is env-driven so it ports to RDS/ElastiCache without code changes. |
-| **Redis Lua atomic gate** | Documented above. Right answer at higher RPS, wrong scale here. |
-
----
-
 ## Tech stack
 
 | Layer | Tech | Why |
@@ -165,13 +75,23 @@ The spec is explicit: one product, one sale. So:
 
 ---
 
+### Request flow at a glance
+
+| Action | Path | Backed by |
+| --- | --- | --- |
+| First page load | `GET /api/sale/status` | Postgres read, cached in Redis (1s TTL) |
+| Live updates | WebSocket `/sale-stream` event `sale:status` | Pushed by `SaleService` on every successful purchase |
+| Buy attempt | `POST /api/sale/purchase` | Atomic Postgres transaction (decrement + insert), idempotency-key dedup |
+
+---
+
 ## Quick start
 
 ### Prerequisites
 
 - Node 18+ and pnpm 10+
 - Docker + Docker Compose
-- (Optional, for k6 stress) `brew install k6` on macOS, or [other install methods](https://k6.io/docs/get-started/installation/)
+- (for k6 stress) `brew install k6` on macOS
 
 ### One-time setup
 
@@ -181,25 +101,26 @@ cd flash-sale-system
 pnpm install
 
 # Start infrastructure (Postgres on :5446, Redis on :6379)
-docker compose up -d
+pnpm infra:up
 
-# Apply migrations and seed one product + one active sale (stock = 50)
+# Stop infrastructure
+pnpm infra:down
+
+# Apply migrations 
 pnpm --filter backend prisma:generate
-pnpm --filter backend prisma:deploy
-pnpm --filter backend db:seed
+pnpm --filter backend prisma:migrate
+
+# Insert flash sale (for quick test)
+pnpm -w run command insert-sale qty={stockQty}
 ```
 
 ### Run the stack
 
 ```bash
-# Terminal 1 — backend on :3200 (Swagger at /docs)
-pnpm --filter backend dev
-
-# Terminal 2 — frontend on :3201
-pnpm --filter frontend dev
+pnpm dev
 ```
 
-Open **http://localhost:3201**. You should see the seeded sneaker with an ACTIVE sale and live-ticking countdown. Click **Buy now** with any email → confirmation. Refresh → email is remembered, "already purchased" is shown.
+Open **http://localhost:3201**. You should see the inserted product (sneaker) with an ACTIVE sale and live-ticking countdown. Click **Buy now** with any email → confirmation. Refresh → email is remembered, "already purchased" is shown.
 
 To watch live stock decrements between two viewers: open the page in two tabs side-by-side and click Buy in one. The other tab updates within ~50ms via WebSocket.
 
@@ -207,7 +128,7 @@ To watch live stock decrements between two viewers: open the page in two tabs si
 
 ## API
 
-Base URL: `http://localhost:3200/api`. Full interactive Swagger UI at `http://localhost:3200/docs`.
+Base URL: `http://localhost:3200/api`. Swagger UI at `http://localhost:3200/docs`.
 
 ### `GET /sale/status`
 
@@ -315,15 +236,15 @@ Two complementary stress tools, each targeting a different layer:
 ### Frontend UI stress (Playwright)
 
 ```bash
-# Pre-flight: fresh seed (stock = 50)
-pnpm --filter backend db:seed
+# Pre-flight: fresh insert (stock = 100)
+pnpm -w run command insert-sale qty=100
 # Make sure backend + frontend are running
 pnpm --filter frontend stress
 ```
 
 What it does: launches **150 isolated Chromium contexts**, each loading the page with a unique email and clicking Buy. Asserts that:
 
-- exactly **50 contexts** see "Purchase confirmed"
+- exactly **100 contexts** see "Purchase confirmed"
 - the rest see "Sold out" or "already purchased"
 - **zero** contexts see "Something went wrong"
 - every context gets an answer (no timeouts)
@@ -331,52 +252,21 @@ What it does: launches **150 isolated Chromium contexts**, each loading the page
 Expected output:
 ```
 === STRESS TEST RESULTS ===
-stock=50, attempts=150, elapsed=~40000ms
-outcomes: { success: 50, sold_out: 100, error: 0 }
+stock=100, attempts=150, elapsed=~40000ms
+outcomes: { success: 100, sold_out: 100, error: 0 }
 ===========================
 ```
 
 **Why Playwright for UI stress:** it exercises the full stack — Next.js render, React Query mutation, WebSocket subscription, status banner — under genuinely concurrent users. The take-home asks the system to "handle the load without failing," and this proves the user-visible flow holds.
 
-### Backend API stress (k6)
+### Backend API stress test (k6)
 
 ```bash
-# Seed a fresh sale, note the printed sale_id
-pnpm --filter backend db:seed
+# Insert a fresh sale, note the printed sale_id
+pnpm -w run command insert-sale qty=100
 # Run k6 with 200 concurrent virtual users × 1000 iterations
 k6 run apps/backend/test/stress/k6-purchase.js --env SALE_ID=<cuid_from_seed>
 ```
-
-What it does: 200 concurrent VUs hammer `POST /sale/purchase` directly, bypassing the UI. Measures p95 latency and 5xx rate. **Thresholds** (the run fails if breached):
-
-- `http_req_failed{check:no_5xx}` < 1%
-- `http_req_duration{check:purchase}` p95 < 1000ms
-
-After the run, the teardown hook prints the final stock state. You can also verify in psql:
-```sql
-SELECT count(*) FROM orders;        -- = initial stock (50)
-SELECT remaining_stock FROM sales;  -- = 0
-```
-
-**Why both:** Playwright proves the **UI flow** doesn't crack under concurrent users. k6 proves the **backend** can sustain real-flash-sale RPS (~1000+ req/sec on the laptop tested) without overselling or 5xx. Different layers, different failure modes.
-
----
-
-## At higher scale: what I'd add
-
-These are deliberate omissions for the take-home that I'd promote in production:
-
-| Concern | Threshold | Mitigation |
-| --- | --- | --- |
-| **Postgres row contention** | >5k sustained RPS for one row | Migrate the gate to a Redis Lua atomic check-and-decrement with a Postgres reconciler. Documented but not built. |
-| **Single-instance WebSocket** | Multiple backend pods | Add `@socket.io/redis-adapter` so emits fan out across instances; sticky sessions on the load balancer. |
-| **Order audit trail / async work** | Email confirmations, analytics events | Add BullMQ for post-purchase async jobs. Keeps the hot path synchronous, defers I/O off the response. |
-| **Authentication** | Real buyers | JWT or OAuth. The current email-only contract is a placeholder. |
-| **Observability** | Production debugging | OTEL traces around the transaction; Prometheus metrics on `sale_purchase_total` by outcome. |
-| **Rate limiting** | Bot traffic | Per-IP rate limit at the gateway; CAPTCHA on the Buy button if abuse detected. |
-| **Multi-sale support** | Spec evolves beyond single-product | Add `GET /sales/active` for discovery; parameterize endpoints with `:saleId`. |
-
-The point isn't that these are missing — it's that the current architecture **doesn't have to be rewritten** to add them. The Postgres gate, the Redis cache pattern, the React Query store, and the env-driven config all survive.
 
 ---
 
@@ -422,11 +312,5 @@ flash-sale-system/
 ```
 
 ---
-
-## Notes for the reviewer
-
-- The single most important file to read is **[apps/backend/src/sale/sale.service.ts](apps/backend/src/sale/sale.service.ts)** — the `purchase()` method is the entire correctness story in ~80 lines.
-- The single most important test to run is **`pnpm --filter backend test:concurrency`** — it's the proof of no-overselling.
-- Design rationale lives in this README, not scattered across code comments. The trade-off discussion above is the answer to "explain your architectural choices."
 
 Estimated time to first running stack from a clean clone: **~3 minutes** (assuming Docker and pnpm are installed).

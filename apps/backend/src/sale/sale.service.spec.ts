@@ -47,7 +47,14 @@ describe('SaleService', () => {
     prisma = {
       sale: { findFirst: jest.fn(), findUniqueOrThrow: jest.fn() },
       order: { findUnique: jest.fn(), create: jest.fn() },
-      user: { upsert: jest.fn() },
+      // user upsert now happens via ensureUser() OUTSIDE the transaction.
+      // Default to "user already exists" so tests that don't care about user
+      // resolution work without per-test setup.
+      user: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'user-1', email: 'alice@test.com' }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue({ id: 'user-1', email: 'alice@test.com' }),
+        create: jest.fn().mockResolvedValue({ id: 'user-1', email: 'alice@test.com' }),
+      },
       $transaction: jest.fn(),
       $queryRaw: jest.fn(),
     };

@@ -10,6 +10,6 @@ import { SaleService } from './sale.service';
   imports: [],
   controllers: [SaleController],
   providers: [PrismaService, RedisService, SaleService, SaleGateway],
-  exports: [SaleGateway],
+  exports: [SaleGateway, SaleService],
 })
 export class SaleModule {}

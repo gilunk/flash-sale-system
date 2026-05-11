@@ -1,6 +1,6 @@
 import { ApiProperty } from "@nestjs/swagger";
 import { IsEmail, IsNotEmpty } from "class-validator";
-import { IsExist } from "src/common/rules/IsExist";
+import { IsExist } from "src/common/rules/is-exist";
 
 export class PurchaseRequestDto {
   @ApiProperty()

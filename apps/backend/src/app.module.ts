@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { HealthModule } from './health/health.module';
 import { DbModule } from './db/db.module';
 import { SaleModule } from './sale/sale.module';
+import { CommandModule } from './command/command.module';
 
 @Module({
   imports: [
@@ -13,7 +14,8 @@ import { SaleModule } from './sale/sale.module';
     DbModule,
     SaleModule,
     RedisModule,
-    HealthModule
+    HealthModule,
+    CommandModule
   ],
   controllers: [],
   providers: [],
