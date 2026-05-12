@@ -70,12 +70,12 @@ flowchart LR
 | **ORM** | Prisma 6 | 
 | **Cache** | Redis 7 (`ioredis`) | 
 | **WebSocket** | socket.io via `@nestjs/websockets` | 
-| **Message broker** | RabbitMQ 3 via `@nestjs/microservices` | 
+| **Message broker** | RabbitMQ 3 via `@nestjs/microservices` (You may think for this, is over-engineering after you see the code. But I have my reason. Since in the task said that "Imagine you are tasked with buildng the backend system for a highly anticipated flash sale". So I think the purchase isn't about processing the data only, but after that it can send the notification to the selected email, etc. So I added RabbitMQ even though it's just showing logs ) | 
 | **Frontend framework** | Next.js 16 (App Router) | 
 | **Server state** | TanStack Query 5 | 
 | **Styling** | Tailwind CSS 4 | 
 | **Validation** | class-validator + ValidationPipe | 
-| **Tests** | Jest, Supertest, Playwright, k6 | 
+| **Tests** | Jest, native `fetch`, Playwright, k6 | 
 | **Monorepo** | pnpm workspaces + Turborepo | 
 
 ---

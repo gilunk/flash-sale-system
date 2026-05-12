@@ -2,13 +2,34 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
-import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { BusinessErrorFilter } from '../src/common/filters/business-error.filter';
 import { PrismaService } from '../src/db/prisma.service';
 
 // Headline correctness proof. If overselling is possible under concurrent
 // load, this is the test that would catch it.
+
+// Tiny fetch wrapper that mirrors the bits supertest gave us — `status` plus
+// a parsed `body` — without pulling in a dep. Real HTTP via Node's built-in
+// fetch; the app is bound on a real port via app.listen(0) below.
+type ApiResponse<T = any> = { status: number; body: T };
+
+async function purchase(
+  baseUrl: string,
+  options: { email: string; saleId: string; idempotencyKey?: string },
+): Promise<ApiResponse> {
+  const res = await fetch(`${baseUrl}/api/sale/purchase`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': options.idempotencyKey ?? randomUUID(),
+    },
+    body: JSON.stringify({ email: options.email, sale_id: options.saleId }),
+  });
+  // We always try to parse JSON; the API returns JSON for 201, 409, and 400.
+  const body = await res.json().catch(() => ({}));
+  return { status: res.status, body };
+}
 
 describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
   let app: INestApplication;
@@ -43,10 +64,10 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
     });
 
     await app.startAllMicroservices();
-    // Bind to a real ephemeral port. Without listen(), supertest uses the
-    // unbound http.Server in injection mode, which drops connections (read
-    // ECONNRESET) under high concurrent load. A real listener handles many
-    // simultaneous sockets cleanly.
+    // Bind to a real ephemeral port. We use native fetch from the test to hit
+    // this real listener — same code path real users hit, and Node's HTTP
+    // server handles concurrent sockets cleanly (the in-memory injection mode
+    // we used to rely on via supertest drops connections under high load).
     await app.listen(0);
     baseUrl = await app.getUrl();
     prisma = app.get(PrismaService);
@@ -100,10 +121,10 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: ATTEMPTS }, (_, i) =>
-        request(baseUrl)
-          .post('/api/sale/purchase')
-          .set('Idempotency-Key', randomUUID())
-          .send({ email: `buyer${i}@test.com`, sale_id: sale.id }),
+        purchase(baseUrl, {
+          email: `buyer${i}@test.com`,
+          saleId: sale.id,
+        }),
       ),
     );
 
@@ -133,10 +154,12 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: 100 }, () =>
-        request(baseUrl)
-          .post('/api/sale/purchase')
-          .set('Idempotency-Key', randomUUID()) // distinct keys, same email
-          .send({ email: 'spammer@test.com', sale_id: sale.id }),
+        purchase(baseUrl, {
+          email: 'spammer@test.com',
+          saleId: sale.id,
+          // distinct keys, same email — forces the user_sale unique index
+          // to be the gate, not idempotency replay.
+        }),
       ),
     );
 
@@ -161,10 +184,11 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: 100 }, () =>
-        request(baseUrl)
-          .post('/api/sale/purchase')
-          .set('Idempotency-Key', idemKey)
-          .send({ email: 'replay@test.com', sale_id: sale.id }),
+        purchase(baseUrl, {
+          email: 'replay@test.com',
+          saleId: sale.id,
+          idempotencyKey: idemKey,
+        }),
       ),
     );
 
@@ -198,10 +222,10 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
       },
     });
 
-    const res = await request(baseUrl)
-      .post('/api/sale/purchase')
-      .set('Idempotency-Key', randomUUID())
-      .send({ email: 'early@test.com', sale_id: sale.id });
+    const res = await purchase(baseUrl, {
+      email: 'early@test.com',
+      saleId: sale.id,
+    });
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('SALE_NOT_STARTED');
