@@ -109,8 +109,9 @@ pnpm install
 # Start infrastructure (Postgres on :5446, Redis on :6379, RabbitMQ on :5672, RabbitMQ UI on :15672)
 pnpm infra:up
 
-# Stop infrastructure
-pnpm infra:down
+# Fill .env
+cp apps/backend/.env.example apps/backend/.env
+cp apps/frontend/.env.example apps/frontend/.env
 
 # Apply migrations 
 pnpm --filter backend prisma:generate
