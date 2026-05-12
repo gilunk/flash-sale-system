@@ -1,4 +1,5 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { Test } from '@nestjs/testing';
 import { randomUUID } from 'node:crypto';
 import request from 'supertest';
@@ -24,6 +25,23 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
     app.useGlobalFilters(new BusinessErrorFilter());
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
+    // Connect the RabbitMQ consumer just like main.ts. Without this, the app
+    // would still publish purchase.confirmed events but no @EventPattern
+    // handler would fire — the queue would back up. Using a dedicated test
+    // queue (RABBITMQ_PURCHASE_QUEUE in .env.test) keeps dev traffic separate.
+    app.connectMicroservice<MicroserviceOptions>({
+      transport: Transport.RMQ,
+      options: {
+        urls: [
+          process.env.RABBITMQ_URL ?? 'amqp://flashsale:flashsale@localhost:5672',
+        ],
+        queue: process.env.RABBITMQ_PURCHASE_QUEUE ?? 'purchase.events.test',
+        queueOptions: { durable: true },
+        noAck: false,
+      },
+    });
+
+    await app.startAllMicroservices();
     await app.init();
     prisma = app.get(PrismaService);
   });
@@ -33,12 +51,21 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
   });
 
   beforeEach(async () => {
-    // Single-statement TRUNCATE CASCADE is atomic and handles FK ordering
-    // automatically — safer than chained deleteMany() calls when the previous
-    // test may have left rows in flight.
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "orders", "sales", "users", "products" RESTART IDENTITY CASCADE',
-    );
+    // Let any fire-and-forget post-purchase work (cache refresh, WS broadcast,
+    // RMQ publish) drain so cleanup doesn't deadlock against in-flight Prisma
+    // transactions still holding row locks from the previous test.
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Single-transaction deleteMany array. FK ordering is enforced by array
+    // order; DELETEs take row locks (not exclusive table locks like TRUNCATE),
+    // so they coexist with the connection-pool's slow drain after a high-
+    // concurrency test.
+    await prisma.$transaction([
+      prisma.order.deleteMany({}),
+      prisma.sale.deleteMany({}),
+      prisma.user.deleteMany({}),
+      prisma.product.deleteMany({}),
+    ]);
   });
 
   async function seedSale(stock: number) {
@@ -58,7 +85,10 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
   it('serves exactly N orders for stock=N when ATTEMPTS > N', async () => {
     const STOCK = 10;
-    const ATTEMPTS = 200;
+    // 100 attempts (10× stock) is enough to exercise the SOLD_OUT path without
+    // saturating Prisma's connection pool, which can otherwise cause TRUNCATE
+    // in the next test's beforeEach to deadlock against lingering locks.
+    const ATTEMPTS = 100;
 
     const sale = await seedSale(STOCK);
 

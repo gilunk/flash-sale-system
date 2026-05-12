@@ -3,6 +3,7 @@ import { RedisModule } from './cache/redis.module';
 import { ConfigModule } from '@nestjs/config';
 import { HealthModule } from './health/health.module';
 import { DbModule } from './db/db.module';
+import { MqModule } from './mq/mq.module';
 import { SaleModule } from './sale/sale.module';
 import { CommandModule } from './command/command.module';
 
@@ -12,6 +13,7 @@ import { CommandModule } from './command/command.module';
       isGlobal: true,
     }),
     DbModule,
+    MqModule,
     SaleModule,
     RedisModule,
     HealthModule,

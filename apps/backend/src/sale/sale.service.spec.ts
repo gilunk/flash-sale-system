@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import { RedisService } from '../cache/redis.service';
 import { PrismaService } from '../db/prisma.service';
+import { PurchaseEventsPublisher } from '../mq/purchase-events.publisher';
 import { BusinessError } from './errors/error';
 import { SaleGateway } from './sale.gateway';
 import { SaleService } from './sale.service';
@@ -42,6 +43,7 @@ describe('SaleService', () => {
   let prisma: any;
   let redis: any;
   let gateway: any;
+  let purchaseEvents: { publishPurchaseConfirmed: jest.Mock };
 
   beforeEach(async () => {
     prisma = {
@@ -66,6 +68,7 @@ describe('SaleService', () => {
       }),
     };
     gateway = { emitStatus: jest.fn() };
+    purchaseEvents = { publishPurchaseConfirmed: jest.fn() };
 
     const module = await Test.createTestingModule({
       providers: [
@@ -74,6 +77,7 @@ describe('SaleService', () => {
         { provide: RedisService, useValue: redis },
         { provide: ConfigService, useValue: { get: () => '1000' } },
         { provide: SaleGateway, useValue: gateway },
+        { provide: PurchaseEventsPublisher, useValue: purchaseEvents },
       ],
     }).compile();
 
@@ -196,6 +200,16 @@ describe('SaleService', () => {
       await new Promise((r) => setImmediate(r));
       expect(gateway.emitStatus).toHaveBeenCalledTimes(1);
       expect(gateway.emitStatus.mock.calls[0][0].remainingStock).toBe(49);
+
+      // RabbitMQ event also fired with the same purchase data.
+      expect(purchaseEvents.publishPurchaseConfirmed).toHaveBeenCalledTimes(1);
+      expect(purchaseEvents.publishPurchaseConfirmed.mock.calls[0][0]).toMatchObject({
+        orderId: 'order-new',
+        userId: 'user-1',
+        email: 'alice@test.com',
+        saleId: 'sale-1',
+        remainingStock: 49,
+      });
     });
 
     it.each([
@@ -226,6 +240,7 @@ describe('SaleService', () => {
         code,
       } as BusinessError);
       expect(gateway.emitStatus).not.toHaveBeenCalled();
+      expect(purchaseEvents.publishPurchaseConfirmed).not.toHaveBeenCalled();
     });
 
     it('throws BusinessError(ALREADY_PURCHASED) on unique-violation P2002', async () => {
@@ -246,6 +261,7 @@ describe('SaleService', () => {
         code: 'ALREADY_PURCHASED',
       } as BusinessError);
       expect(gateway.emitStatus).not.toHaveBeenCalled();
+      expect(purchaseEvents.publishPurchaseConfirmed).not.toHaveBeenCalled();
     });
 
     it('rethrows non-P2002 errors without converting to a BusinessError', async () => {

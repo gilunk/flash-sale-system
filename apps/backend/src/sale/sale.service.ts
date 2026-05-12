@@ -13,6 +13,7 @@ import { BusinessError } from "./errors/error";
 import { SaleGateway } from "./sale.gateway";
 import { PrismaService } from "src/db/prisma.service";
 import { RedisService } from "src/cache/redis.service";
+import { PurchaseEventsPublisher } from "src/mq/purchase-events.publisher";
 
 const SALE_STATUS_CACHE_KEY = 'sale:status:current';
 
@@ -26,6 +27,7 @@ export class SaleService {
     private readonly redis: RedisService,
     private readonly config: ConfigService,
     private readonly gateway: SaleGateway,
+    private readonly purchaseEvents: PurchaseEventsPublisher,
   ) {
     this.cacheTtlMs = Number(this.config.get<string>('SALE_CACHE_TTL_MS') ?? 1000);
   }
@@ -94,7 +96,7 @@ export class SaleService {
     // are harmless — the identity is just a buyer label.
     const user = await this.ensureUser(email);
 
-    const orderId = await this.prisma.$transaction(async (tx) => {
+    const { orderId, remainingStock } = await this.prisma.$transaction(async (tx) => {
       // To handle overselling
       const decrementedStock = await tx.$queryRaw<Array<{ remaining_stock: number }>>`
         UPDATE sales
@@ -114,6 +116,8 @@ export class SaleService {
         throw new BusinessError('SOLD_OUT');
       }
 
+      const newRemainingStock = Number(decrementedStock[0].remaining_stock);
+
       // create order
       try {
         const order = await tx.order.create({
@@ -123,7 +127,7 @@ export class SaleService {
             idempotency_key: idempotencyKey,
           },
         });
-        return order.id;
+        return { orderId: order.id, remainingStock: newRemainingStock };
       } catch (err) {
         if (
           err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -139,6 +143,19 @@ export class SaleService {
     this.broadcastFreshStatus().catch((err) =>
       this.logger.warn(`Failed to broadcast sale status: ${err}`),
     );
+
+    // Publish the confirmed-purchase event onto RabbitMQ. Fire-and-forget:
+    // the user's HTTP response shouldn't wait for the broker to ack. Consumers
+    // (audit log today, email/webhook in production) run asynchronously and
+    // are decoupled from the synchronous purchase commit.
+    this.purchaseEvents.publishPurchaseConfirmed({
+      orderId,
+      userId: user.id,
+      email,
+      saleId: activeSale.id,
+      remainingStock,
+      occurredAt: new Date().toISOString(),
+    });
 
     return { orderId, status: 'CONFIRMED' };
   }

@@ -32,6 +32,24 @@ services:
       timeout: 3s
       retries: 20
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: flashsale-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: flashsale
+      RABBITMQ_DEFAULT_PASS: flashsale
+    ports:
+      - "5672:5672"      # AMQP
+      - "15672:15672"    # Management UI (http://localhost:15672, login flashsale/flashsale)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+
   # Ephemeral DB used by integration tests. tmpfs so each `docker compose up`
   # gives you a clean DB without volume cleanup. Started on demand via
   # `docker compose up -d postgres-test`.
@@ -56,3 +74,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  rabbitmq_data:

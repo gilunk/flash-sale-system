@@ -1,6 +1,6 @@
 # Flash Sale System
 
-A single-product flash sale system built with **NestJS + Postgres + Redis + Socket.IO** on the backend and **Next.js + React Query** on the frontend. Designed around three goals from the spec: **correctness under concurrency**, **demonstrability via stress tests**, and **clear articulation of trade-offs**.
+A single-product flash sale system built with **NestJS + Postgres + Redis + Socket.IO + RabbitMQ** on the backend and **Next.js + React Query** on the frontend. Designed around three goals from the spec: **correctness under concurrency**, **demonstrability via stress tests**, and **clear articulation of trade-offs**.
 
 > **Headline correctness result** — from `pnpm --filter backend test:concurrency`:
 >
@@ -41,10 +41,12 @@ flowchart LR
         ctrl["SaleController<br/>GET /sale/status<br/>POST /sale/purchase"]
         svc["SaleService<br/>(atomic transaction)"]
         gw["SaleGateway<br/>/sale-stream"]
+        cons["PurchaseEventsConsumer<br/>@EventPattern"]
     end
 
     pg[(Postgres<br/>concurrency gate)]
     rd[(Redis<br/>status cache)]
+    mq[(RabbitMQ<br/>purchase events)]
 
     user -->|HTTP load| page
     page -->|"useQuery / useMutation"| rq
@@ -55,6 +57,8 @@ flowchart LR
     svc -->|"UPDATE ... WHERE remaining_stock > 0<br/>INSERT ... ON UNIQUE(user, sale)"| pg
     svc -->|"read-through cache<br/>TTL 1s"| rd
     svc -->|"emit on stock change"| gw
+    svc -->|"emit purchase.confirmed"| mq
+    mq -->|"consume async"| cons
 ```
 
 ## Tech stack
@@ -66,6 +70,7 @@ flowchart LR
 | **ORM** | Prisma 6 | Migrations + generated types; raw SQL via `$queryRaw` for the hot path |
 | **Cache** | Redis 7 (`ioredis`) | Read-through cache for `/sale/status` with 1s TTL |
 | **WebSocket** | socket.io via `@nestjs/websockets` | Push fresh `sale:status` to all viewers on stock change |
+| **Message broker** | RabbitMQ 3 via `@nestjs/microservices` | Decouples post-purchase async work (audit log today, email/webhook in production) from the synchronous purchase response |
 | **Frontend framework** | Next.js 16 (App Router) | Static React with one client page; Server Components left as a future option |
 | **Server state** | TanStack Query 5 | Polling-free now: WS pushes into the same cache via `setQueryData` |
 | **Styling** | Tailwind CSS 4 | Utility-first, single sky-tinted palette |
@@ -82,6 +87,7 @@ flowchart LR
 | First page load | `GET /api/sale/status` | Postgres read, cached in Redis (1s TTL) |
 | Live updates | WebSocket `/sale-stream` event `sale:status` | Pushed by `SaleService` on every successful purchase |
 | Buy attempt | `POST /api/sale/purchase` | Atomic Postgres transaction (decrement + insert), idempotency-key dedup |
+| Post-purchase async work | RabbitMQ queue `purchase.events` event `purchase.confirmed` | Published by `SaleService` after commit; consumed in-process by `PurchaseEventsConsumer` (audit log / email / webhook hooks) |
 
 ---
 
@@ -100,7 +106,7 @@ git clone <repo-url>
 cd flash-sale-system
 pnpm install
 
-# Start infrastructure (Postgres on :5446, Redis on :6379)
+# Start infrastructure (Postgres on :5446, Redis on :6379, RabbitMQ on :5672, RabbitMQ UI on :15672)
 pnpm infra:up
 
 # Stop infrastructure
@@ -186,6 +192,23 @@ const socket = io('http://localhost:3200/sale-stream', { transports: ['websocket
 socket.on('sale:status', (status) => console.log(status));
 ```
 
+### RabbitMQ: queue `purchase.events`, event `purchase.confirmed`
+
+Published by the backend after every successful purchase commit. Payload shape:
+
+```json
+{
+  "orderId": "cuid_...",
+  "userId": "cuid_...",
+  "email": "alice@test.com",
+  "saleId": "cuid_...",
+  "remainingStock": 49,
+  "occurredAt": "2026-05-12T10:30:00.000Z"
+}
+```
+
+Consumed in-process by `PurchaseEventsConsumer` (audit log today; plug in email/webhook/analytics here). The broker's management UI is at **http://localhost:15672** (user/pass: `flashsale`/`flashsale`).
+
 ---
 
 ## Testing
@@ -265,7 +288,7 @@ outcomes: { success: 100, sold_out: 100, error: 0 }
 # Insert a fresh sale, note the printed sale_id
 pnpm -w run command insert-sale qty=100
 # Run k6 with 200 concurrent virtual users × 1000 iterations
-k6 run apps/backend/test/stress/k6-purchase.js --env SALE_ID=<cuid_from_seed>
+k6 run apps/backend/test/stress/k6-purchase.js --env SALE_ID=<cuid_from_command>
 ```
 
 ---
@@ -275,7 +298,7 @@ k6 run apps/backend/test/stress/k6-purchase.js --env SALE_ID=<cuid_from_seed>
 ```
 flash-sale-system/
 ├── apps/
-│   ├── backend/                       NestJS API + WebSocket
+│   ├── backend/                       NestJS API + WebSocket + RabbitMQ consumer
 │   │   ├── prisma/
 │   │   │   ├── schema.prisma          Product, Sale, User, Order
 │   │   │   ├── migrations/
@@ -287,6 +310,7 @@ flash-sale-system/
 │   │   │   │   ├── sale.gateway.ts    /sale-stream WS gateway
 │   │   │   │   ├── sale.service.spec.ts
 │   │   │   │   └── errors/error.ts    Typed BusinessError + ErrorCode
+│   │   │   ├── mq/                    RabbitMQ publisher + @EventPattern consumer
 │   │   │   ├── db/                    PrismaService (global)
 │   │   │   ├── cache/                 RedisService (global)
 │   │   │   ├── health/                /health probe
@@ -307,7 +331,7 @@ flash-sale-system/
 │       ├── types/index.ts             Mirror of backend DTOs
 │       └── tests/stress/              Playwright UI stress test
 ├── packages/types/                    Shared TS types (workspace)
-├── docker-compose.yml                 Postgres + Redis + ephemeral test DB
+├── docker-compose.yml                 Postgres + Redis + RabbitMQ + ephemeral test DB
 └── turbo.json                         Monorepo task orchestration
 ```
 
