@@ -63,20 +63,20 @@ flowchart LR
 
 ## Tech stack
 
-| Layer | Tech | Why |
-| --- | --- | --- |
-| **Backend framework** | NestJS 11 | Native module/DI, first-class WebSocket gateway support, Swagger generation |
-| **Database** | Postgres 16 | The concurrency gate. Single-row UPDATE with `WHERE remaining_stock > 0 RETURNING` is the contract. |
-| **ORM** | Prisma 6 | Migrations + generated types; raw SQL via `$queryRaw` for the hot path |
-| **Cache** | Redis 7 (`ioredis`) | Read-through cache for `/sale/status` with 1s TTL |
-| **WebSocket** | socket.io via `@nestjs/websockets` | Push fresh `sale:status` to all viewers on stock change |
-| **Message broker** | RabbitMQ 3 via `@nestjs/microservices` | Decouples post-purchase async work (audit log today, email/webhook in production) from the synchronous purchase response |
-| **Frontend framework** | Next.js 16 (App Router) | Static React with one client page; Server Components left as a future option |
-| **Server state** | TanStack Query 5 | Polling-free now: WS pushes into the same cache via `setQueryData` |
-| **Styling** | Tailwind CSS 4 | Utility-first, single sky-tinted palette |
-| **Validation** | class-validator + ValidationPipe | DTO-level enforcement at the controller boundary |
-| **Tests** | Jest, Supertest, Playwright, k6 | Unit + integration (no-oversell) + UI stress + API stress |
-| **Monorepo** | pnpm workspaces + Turborepo | `apps/backend`, `apps/frontend`, shared `packages/types` |
+| Layer | Tech | 
+| --- | --- | 
+| **Backend framework** | NestJS 11 | 
+| **Database** | Postgres 16 | 
+| **ORM** | Prisma 6 | 
+| **Cache** | Redis 7 (`ioredis`) | 
+| **WebSocket** | socket.io via `@nestjs/websockets` | 
+| **Message broker** | RabbitMQ 3 via `@nestjs/microservices` | 
+| **Frontend framework** | Next.js 16 (App Router) | 
+| **Server state** | TanStack Query 5 | 
+| **Styling** | Tailwind CSS 4 | 
+| **Validation** | class-validator + ValidationPipe | 
+| **Tests** | Jest, Supertest, Playwright, k6 | 
+| **Monorepo** | pnpm workspaces + Turborepo | 
 
 ---
 
@@ -262,43 +262,6 @@ Two complementary stress tools, each targeting a different layer:
 ```bash
 # Make sure backend + frontend are running. The test resets the sale itself
 # via /api/command/insert-sale, so no manual pre-seed is needed.
-pnpm --filter frontend stress
-```
-
-What it does: launches **30 isolated Chromium contexts** in waves of 5, each loading the page with a unique email and clicking Buy. Asserts that:
-
-- exactly **10 contexts** see "Purchase confirmed" (= seeded stock)
-- the rest see "Sold out"
-- **zero** contexts see "Something went wrong"
-- every context gets an answer (no timeouts)
-
-Expected output:
-```
-=== STRESS TEST RESULTS ===
-stock=10, attempts=30, elapsed=~110000ms
-outcomes: { success: 10, sold_out: 20 }
-===========================
-```
-
-Tunable via env vars:
-```bash
-# Push harder on a beefier machine
-STRESS_STOCK=50 STRESS_ATTEMPTS=80 STRESS_WAVE_SIZE=10 \
-  pnpm --filter frontend stress
-```
-
-**Why Playwright for UI stress:** it exercises the full stack — Next.js render, React Query mutation, WebSocket subscription, status banner — under genuinely concurrent users. The take-home asks the system to "handle the load without failing," and this proves the user-visible flow holds.
-
-**Run against a production build for representative numbers.** The defaults above target `next dev`, which serializes page compilation under simultaneous loads and inflates the wall-clock ~3–4×. For faster, more realistic stress numbers:
-
-```bash
-# Build once
-pnpm --filter frontend build
-
-# Serve the production bundle on :3201
-pnpm --filter frontend start &
-
-# Then run the stress (typically cuts elapsed from ~110s to ~30s)
 pnpm --filter frontend stress
 ```
 
