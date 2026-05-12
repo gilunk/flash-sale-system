@@ -87,13 +87,11 @@ export class SaleService {
       throw new ServiceUnavailableException('No flash sale at the moment.');
     }
 
-    // Resolve the user OUTSIDE the transaction. Doing this inside $transaction
-    // is dangerous: if two parallel callers both miss the SELECT and try to
-    // INSERT, the loser's P2002 *poisons the transaction* — Postgres marks it
-    // aborted (25P02) and any subsequent statement fails. By resolving the
-    // user first, the purchase transaction starts with a known user.id and
-    // can never hit that pathology. Orphan users (created but never purchased)
-    // are harmless — the identity is just a buyer label.
+    /*  
+      By resolving the user first, the purchase transaction starts with a known user.id. 
+      Orphan users (created but never purchased)
+      are harmless — the identity is just a buyer label.
+    */
     const user = await this.ensureUser(email);
 
     const { orderId, remainingStock } = await this.prisma.$transaction(async (tx) => {
