@@ -102,6 +102,8 @@ flowchart LR
 ### One-time setup
 
 ```bash
+# Estimated time to first running stack from a clean clone: **~3 minutes** (assuming Docker and pnpm are installed).
+
 git clone <repo-url>
 cd flash-sale-system
 pnpm install
@@ -319,5 +321,3 @@ flash-sale-system/
 ```
 
 ---
-
-Estimated time to first running stack from a clean clone: **~3 minutes** (assuming Docker and pnpm are installed).
