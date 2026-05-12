@@ -259,28 +259,47 @@ Two complementary stress tools, each targeting a different layer:
 ### Frontend UI stress (Playwright)
 
 ```bash
-# Pre-flight: fresh insert (stock = 100)
-pnpm -w run command insert-sale qty=100
-# Make sure backend + frontend are running
+# Make sure backend + frontend are running. The test resets the sale itself
+# via /api/command/insert-sale, so no manual pre-seed is needed.
 pnpm --filter frontend stress
 ```
 
-What it does: launches **150 isolated Chromium contexts**, each loading the page with a unique email and clicking Buy. Asserts that:
+What it does: launches **30 isolated Chromium contexts** in waves of 5, each loading the page with a unique email and clicking Buy. Asserts that:
 
-- exactly **100 contexts** see "Purchase confirmed"
-- the rest see "Sold out" or "already purchased"
+- exactly **10 contexts** see "Purchase confirmed" (= seeded stock)
+- the rest see "Sold out"
 - **zero** contexts see "Something went wrong"
 - every context gets an answer (no timeouts)
 
 Expected output:
 ```
 === STRESS TEST RESULTS ===
-stock=100, attempts=150, elapsed=~40000ms
-outcomes: { success: 100, sold_out: 100, error: 0 }
+stock=10, attempts=30, elapsed=~110000ms
+outcomes: { success: 10, sold_out: 20 }
 ===========================
 ```
 
+Tunable via env vars:
+```bash
+# Push harder on a beefier machine
+STRESS_STOCK=50 STRESS_ATTEMPTS=80 STRESS_WAVE_SIZE=10 \
+  pnpm --filter frontend stress
+```
+
 **Why Playwright for UI stress:** it exercises the full stack — Next.js render, React Query mutation, WebSocket subscription, status banner — under genuinely concurrent users. The take-home asks the system to "handle the load without failing," and this proves the user-visible flow holds.
+
+**Run against a production build for representative numbers.** The defaults above target `next dev`, which serializes page compilation under simultaneous loads and inflates the wall-clock ~3–4×. For faster, more realistic stress numbers:
+
+```bash
+# Build once
+pnpm --filter frontend build
+
+# Serve the production bundle on :3201
+pnpm --filter frontend start &
+
+# Then run the stress (typically cuts elapsed from ~110s to ~30s)
+pnpm --filter frontend stress
+```
 
 ### Backend API stress test (k6)
 

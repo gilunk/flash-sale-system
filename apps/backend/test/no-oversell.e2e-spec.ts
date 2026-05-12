@@ -13,6 +13,7 @@ import { PrismaService } from '../src/db/prisma.service';
 describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let baseUrl: string;
 
   beforeAll(async () => {
     const module = await Test.createTestingModule({
@@ -42,7 +43,12 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
     });
 
     await app.startAllMicroservices();
-    await app.init();
+    // Bind to a real ephemeral port. Without listen(), supertest uses the
+    // unbound http.Server in injection mode, which drops connections (read
+    // ECONNRESET) under high concurrent load. A real listener handles many
+    // simultaneous sockets cleanly.
+    await app.listen(0);
+    baseUrl = await app.getUrl();
     prisma = app.get(PrismaService);
   });
 
@@ -94,7 +100,7 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: ATTEMPTS }, (_, i) =>
-        request(app.getHttpServer())
+        request(baseUrl)
           .post('/api/sale/purchase')
           .set('Idempotency-Key', randomUUID())
           .send({ email: `buyer${i}@test.com`, sale_id: sale.id }),
@@ -127,7 +133,7 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: 100 }, () =>
-        request(app.getHttpServer())
+        request(baseUrl)
           .post('/api/sale/purchase')
           .set('Idempotency-Key', randomUUID()) // distinct keys, same email
           .send({ email: 'spammer@test.com', sale_id: sale.id }),
@@ -155,7 +161,7 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
 
     const responses = await Promise.all(
       Array.from({ length: 100 }, () =>
-        request(app.getHttpServer())
+        request(baseUrl)
           .post('/api/sale/purchase')
           .set('Idempotency-Key', idemKey)
           .send({ email: 'replay@test.com', sale_id: sale.id }),
@@ -192,7 +198,7 @@ describe('Concurrency: no overselling (real Postgres, real HTTP)', () => {
       },
     });
 
-    const res = await request(app.getHttpServer())
+    const res = await request(baseUrl)
       .post('/api/sale/purchase')
       .set('Idempotency-Key', randomUUID())
       .send({ email: 'early@test.com', sale_id: sale.id });
