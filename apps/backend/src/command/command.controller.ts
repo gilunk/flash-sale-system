@@ -10,7 +10,7 @@ export class CommandController {
   ) {}
 
   @Post('insert-sale')
-  async ping(@Body() body) {
+  async insertFlashSale(@Body() body) {
     if (isNaN(+body.qty)) {
       return 'qty must be a number';
     }

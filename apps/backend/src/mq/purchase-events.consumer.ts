@@ -11,6 +11,7 @@ export class PurchaseEventsConsumer {
 
   @EventPattern(PURCHASE_CONFIRMED_PATTERN)
   handlePurchaseConfirmed(@Payload() event: PurchaseConfirmedEvent): void {
+    // For sending email process, etc.
     this.logger.log(
       `[audit] order=${event.orderId} email=${event.email} ` +
         `remainingStock=${event.remainingStock} at=${event.occurredAt}`,

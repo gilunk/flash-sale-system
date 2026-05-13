@@ -142,10 +142,7 @@ export class SaleService {
       this.logger.warn(`Failed to broadcast sale status: ${err}`),
     );
 
-    // Publish the confirmed-purchase event onto RabbitMQ. Fire-and-forget:
-    // the user's HTTP response shouldn't wait for the broker to ack. Consumers
-    // (audit log today, email/webhook in production) run asynchronously and
-    // are decoupled from the synchronous purchase commit.
+    // Publish the confirmed-purchase event onto RabbitMQ
     this.purchaseEvents.publishPurchaseConfirmed({
       orderId,
       userId: user.id,
@@ -158,8 +155,7 @@ export class SaleService {
     return { orderId, status: 'CONFIRMED' };
   }
 
-  // Find the user by email; create one if they don't exist yet. Lives OUTSIDE
-  // the purchase transaction so the race-induced P2002 can't poison it.
+  // Find the user by email; create one if they don't exist yet.
   private async ensureUser(email: string): Promise<User> {
     const existing = await this.prisma.user.findFirst({ where: { email } });
     if (existing) return existing;
